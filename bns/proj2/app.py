@@ -111,9 +111,16 @@ def get_item_labels_from_llm(item_name: str, prompt_template: str = PROMPT_TEMPL
 def generate_processed_items(items_iterable, prompt_template: str = PROMPT_TEMPLATE):
     """
     Processes an iterable of items, gets labels from LLM, and yields structured results.
+    Items where both brand_name and item_type are null (None) will be skipped.
     """
     for name, ct in items_iterable:
         brand_name, item_type = get_item_labels_from_llm(name, prompt_template)
+
+        # Check if both brand_name and item_type are None (null)
+        if brand_name is None and item_type is None:
+            print(f"Skipping: Name='{name}' as both brand_name and item_type are null.")
+            continue  # Skip to the next item in the loop
+
         processed_item = {
             "item_name": name,
             "brand_name": brand_name,
