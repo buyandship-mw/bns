@@ -43,9 +43,8 @@ Product name: {name}
 DEFAULT_ITEMS_FILEPATH = 'bns/proj2/data/items.json'
 DEFAULT_OUTPUT_FILEPATH = 'bns/proj2/data/branded_items.jsonl'
 
-# --- Data Loading (remains the same) ---
+# --- Data Loading ---
 def load_items_from_jsonl(filepath: str):
-    # ... (your existing load_items_from_jsonl function)
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             for line_number, line in enumerate(f, 1):
@@ -60,81 +59,61 @@ def load_items_from_jsonl(filepath: str):
                         # print(f"Warning: Skipping line {line_number} in '{filepath}' due to missing 'item_name' or 'item_ct': {line}")
                         continue
                     yield (item_name, item['item_ct'])
-                except json.JSONDecodeError as e:
+                except json.JSONDecodeError: # e
                     # print(f"Warning: Skipping line {line_number} in '{filepath}' due to JSON decoding error: {e}. Line content: '{line}'")
                     continue
-                except KeyError as e:
+                except KeyError: # e
                     # print(f"Warning: Skipping line {line_number} in '{filepath}' due to missing key {e}. Line content: '{line}'")
                     continue
     except FileNotFoundError:
         print(f"Error: Input file not found at {filepath}")
         raise
 
-# --- Prompt Engineering (remains the same) ---
+# --- Prompt Engineering ---
 def format_llm_prompt(item_name: str, template: str = PROMPT_TEMPLATE) -> str:
     return template.format(name=item_name)
 
 # --- LLM Interaction and Response Parsing ---
 def get_item_labels_from_llm(item_name: str, prompt_template: str = PROMPT_TEMPLATE):
-    """
-    Gets brand name and item type from the LLM for a given item name.
-    Handles LLM call and JSON parsing of the response, including stripping Markdown fences.
-    """
     prompt = format_llm_prompt(item_name, prompt_template)
     try:
-        raw_response = prompt_model(prompt) # Actual call to the LLM
-    except Exception as e: # Catch potential errors from prompt_model itself
+        raw_response = prompt_model(prompt)
+    except Exception as e:
         print(f"Error during LLM call for item '{item_name}': {e}")
         return None, None
 
-    # Attempt to clean the raw_response from common Markdown fences
     cleaned_response_str = raw_response.strip()
-
     if cleaned_response_str.startswith("```json") and cleaned_response_str.endswith("```"):
-        # Handles ```json ... ```
-        # Slice off "```json" from the start and "```" from the end
         json_str_to_parse = cleaned_response_str[len("```json") : -len("```")].strip()
     elif cleaned_response_str.startswith("```") and cleaned_response_str.endswith("```"):
-        # Handles ``` ... ``` (generic code block)
-        # Slice off "```" from the start and "```" from the end
         json_str_to_parse = cleaned_response_str[len("```") : -len("```")].strip()
     else:
-        # Assume the response is already plain JSON or will fail parsing as before
         json_str_to_parse = cleaned_response_str
 
     try:
-        # Ensure json_str_to_parse is not empty after potential stripping,
-        # which could happen if the LLM returned, e.g., "```json\n```"
         if not json_str_to_parse:
-            # This specific error message helps diagnose if stripping resulted in an empty string.
             raise json.JSONDecodeError("Extracted JSON string is empty after stripping fences.", cleaned_response_str, 0)
-
         label_data = json.loads(json_str_to_parse)
         brand_name = label_data.get("brand_name")
         item_type = label_data.get("item_type")
         return brand_name, item_type
     except json.JSONDecodeError as e:
-        # Enhanced error message to show what was attempted to be parsed
         print(f"Error parsing LLM JSON response for item '{item_name}': {e}. "
               f"Attempted to parse (first 200 chars): '{json_str_to_parse[:200]}...' "
               f"Raw response (first 200 chars): '{raw_response[:200]}...'")
         return None, None
-    except Exception as e: # Catch any other unexpected errors during parsing
+    except Exception as e:
         print(f"An unexpected error occurred while parsing LLM response for item '{item_name}': {e}")
         return None, None
 
 # --- Helper function for concurrent processing ---
 def process_single_item_task(item_data, prompt_template_str):
-    """
-    Task function to process a single item: get labels and form the result.
-    This function will be executed by each thread in the pool.
-    """
-    name, ct = item_data  # Unpack item data
+    name, ct = item_data
     brand_name, item_type = get_item_labels_from_llm(name, prompt_template_str)
 
     if brand_name is None and item_type is None:
         print(f"Skipping (in thread): Name='{name}' as both brand_name and item_type are null.")
-        return None  # Return None for skipped items
+        return None
 
     processed_item = {
         "item_name": name,
@@ -145,134 +124,145 @@ def process_single_item_task(item_data, prompt_template_str):
     print(f"Processed (in thread): Name='{name}', Brand='{brand_name}', Type='{item_type}', Count={ct}")
     return processed_item
 
-# --- Data Processing (Generator) - Modified for Concurrency ---
-def generate_processed_items_concurrently(items_iterable, prompt_template_str: str = PROMPT_TEMPLATE, max_workers: int = None):
-    """
-    Processes an iterable of items concurrently using a ThreadPoolExecutor,
-    gets labels from LLM, and yields structured results.
-    Items where both brand_name and item_type are null (None) will be skipped.
-    """
+# --- Data Processing (Generator) - Modified for Concurrency & Skipping ---
+def generate_processed_items_concurrently(items_iterable,
+                                          prompt_template_str: str = PROMPT_TEMPLATE,
+                                          max_workers: int = None,
+                                          already_processed_names: set = None):
     if max_workers is None:
-        # Default to number of CPU cores as a starting point for max_workers.
-        # For I/O bound tasks, this can often be higher.
-        # IMPORTANT: TUNE THIS VALUE based on API rate limits and performance.
-        max_workers = os.cpu_count() or 1 # Default to 1 if os.cpu_count() is None
+        max_workers = os.cpu_count() or 1
         print(f"Using up to {max_workers} worker threads (default based on CPU cores). Adjust based on API limits.")
+    
+    if already_processed_names is None:
+        already_processed_names = set()
+
+    futures = []
+    skipped_count = 0
+    submitted_count = 0
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # The `map` function will apply `process_single_item_task` to each item in `items_iterable`.
-        # It also conveniently handles passing the `prompt_template_str` to each call via a lambda or functools.partial.
-        # For simplicity, if `process_single_item_task` only needs one varying argument from the iterable,
-        # and other arguments are fixed, we can use a helper or ensure `items_iterable` yields tuples/objects
-        # that `process_single_item_task` can unpack.
-        
-        # Here, items_iterable yields (name, ct). process_single_item_task expects (item_data, prompt_template_str)
-        # We can use a lambda to adapt this for executor.map, which expects a function of one argument from the iterable.
-        
-        # To pass the (constant) prompt_template to the worker function with map:
-        # We can't directly pass multiple arguments to the mapped function if one comes from the iterable and other is fixed.
-        # So, we'll create futures one by one.
-        
-        futures = []
-        for item_data in items_iterable: # item_data is (name, ct)
+        for item_data in items_iterable:
+            item_name_to_check = item_data[0]
+            if item_name_to_check in already_processed_names:
+                skipped_count += 1
+                continue
             futures.append(executor.submit(process_single_item_task, item_data, prompt_template_str))
+            submitted_count +=1
         
+        if skipped_count > 0:
+            print(f"Skipped {skipped_count} items found in the existing output file.")
+        if submitted_count == 0 and skipped_count > 0:
+             print("No new items to process; all were found as already processed.")
+        elif submitted_count == 0 and skipped_count == 0:
+            print("No items were submitted for processing (input might be empty or fully processed).")
+
+
         for future in concurrent.futures.as_completed(futures):
             try:
                 result = future.result()
-                if result is not None: # Filter out items that were marked for skipping
+                if result is not None:
                     yield result
             except Exception as exc:
-                # Handle exceptions that occurred within the thread task if not caught inside process_single_item_task
-                # This depends on how robust process_single_item_task is.
-                # For now, assume process_single_item_task handles its own errors and returns None or valid data.
-                print(f'An item generated an exception: {exc}')
-                # Optionally, yield an error object or skip
+                # This error reporting might need item context if available
+                # For now, it refers to a generic item processing failure.
+                print(f'An item processing task generated an exception: {exc}')
 
 
-# --- Data Saving (JSONL) - remains the same ---
+# --- Data Saving (JSONL) - Modified for Appending ---
 def save_results_to_jsonl(processed_items_generator, output_path: str) -> int:
-    count_saved = 0
+    count_saved_this_run = 0
     try:
-        with open(output_path, 'w', encoding='utf-8') as f:
+        # Open in append mode ('a')
+        with open(output_path, 'a', encoding='utf-8') as f:
             for item in processed_items_generator:
                 try:
                     json_line = json.dumps(item, ensure_ascii=False)
                     f.write(json_line + '\n')
-                    count_saved += 1
+                    count_saved_this_run += 1
                 except TypeError as e:
                     print(f"Error serializing item to JSON: {e}. Item: {item}")
-        print(f"Successfully saved {count_saved} labeled items to {output_path}")
-        return count_saved
+        if count_saved_this_run > 0:
+            print(f"Successfully appended {count_saved_this_run} new labeled items to {output_path}")
+        elif os.path.exists(output_path): # File exists but nothing new was appended
+             print(f"No new items were appended to {output_path} in this run.")
+
+        return count_saved_this_run
     except IOError as e:
         print(f"Error writing to output file {output_path}: {e}")
     except Exception as e:
         print(f"An unexpected error occurred while saving results to {output_path}: {e}")
-    return count_saved
+    return count_saved_this_run
 
-# --- Main Execution - Modified to call the concurrent generator ---
+# --- Main Execution - Modified for Resumability ---
 def main(items_filepath: str = DEFAULT_ITEMS_FILEPATH,
          output_filepath: str = DEFAULT_OUTPUT_FILEPATH,
          max_items: int = None,
-         num_workers: int = None): # New parameter for number of workers
-    """
-    Main function to load, process concurrently, and save item labels in JSONL format.
-    """
+         num_workers: int = None):
     print(f"Starting item labeling process...")
     print(f"Input file: {items_filepath}")
-    print(f"Output file: {output_filepath}")
+    print(f"Output file (appending): {output_filepath}")
     if num_workers:
         print(f"Requested number of worker threads: {num_workers}")
 
-    start_time = time.time() # For timing
+    start_time = time.time()
+
+    # Load names of already processed items to avoid duplicates
+    processed_item_names = set()
+    if os.path.exists(output_filepath):
+        print(f"Checking existing output file: {output_filepath}")
+        try:
+            with open(output_filepath, 'r', encoding='utf-8') as f_out_check:
+                for line_num, line in enumerate(f_out_check, 1):
+                    line = line.strip()
+                    if line:
+                        try:
+                            data = json.loads(line)
+                            if 'item_name' in data:
+                                processed_item_names.add(data['item_name'])
+                            else:
+                                print(f"Warning: 'item_name' missing in line {line_num} of {output_filepath}")
+                        except json.JSONDecodeError:
+                            print(f"Warning: Could not parse JSON in line {line_num} of {output_filepath}: '{line[:100]}...'")
+            print(f"Found {len(processed_item_names)} item names in existing output file to skip if re-encountered.")
+        except Exception as e:
+            print(f"Error reading existing output file {output_filepath}: {e}. Will proceed without skipping, potentially creating duplicates if input is reprocessed.")
+            processed_item_names = set() # Reset on error to be safe
 
     try:
         raw_items_generator = load_items_from_jsonl(items_filepath)
+        
+        # Prepare items_to_process_iterable, considering max_items
+        # This list will be iterated by the generator submitting tasks.
+        # Filtering for already_processed_names will happen inside generate_processed_items_concurrently.
+        all_input_items = list(raw_items_generator) # Materialize all items first
+        
+        if not all_input_items:
+            print("Input file is empty or all lines were skipped during loading.")
+            return
 
-        items_to_process_iterable = raw_items_generator
+        items_to_process_iterable = all_input_items
         if max_items is not None and max_items > 0:
-            # Materialize the limited items into a list for the executor,
-            # as islice on a generator might be tricky with some executor patterns
-            # if not consumed carefully. For `submit` loop, it's fine.
-            items_to_process_iterable = list(islice(raw_items_generator, max_items))
-            print(f"Processing a maximum of {len(items_to_process_iterable)} items.")
+            items_to_process_iterable = all_input_items[:max_items]
+            print(f"Considering a maximum of {len(items_to_process_iterable)} items from input (before checking against already processed).")
             if not items_to_process_iterable:
-                 print("No items to process after applying max_items limit or from file.")
-                 return # Exit early if no items
+                 print("No items selected after applying max_items limit.")
+                 return
         else:
-            # If processing all, and items_iterable is a true generator,
-            # be mindful if it's very large. For `submit` loop, it's fine.
-            # For testing, it might be better to convert to list if the file is small.
-            # For production with huge files, ensure the generator consumption is efficient.
-            # items_to_process_iterable = list(raw_items_generator) # Use if you need to know total count beforehand or for some executor patterns
-            print("Processing all available items from the input file (or until generator is exhausted).")
+            print(f"Considering all {len(items_to_process_iterable)} loaded items from input (before checking against already processed).")
 
-
-        # Pass the PROMPT_TEMPLATE string directly
         processed_items_generator = generate_processed_items_concurrently(
             items_to_process_iterable,
-            PROMPT_TEMPLATE, # Pass the template string
-            max_workers=num_workers # Pass user-defined num_workers or None for default
+            PROMPT_TEMPLATE,
+            max_workers=num_workers,
+            already_processed_names=processed_item_names # Pass the set here
         )
 
-        items_saved_count = save_results_to_jsonl(processed_items_generator, output_filepath)
+        items_saved_count_this_run = save_results_to_jsonl(processed_items_generator, output_filepath)
 
-        if items_saved_count == 0 and (max_items is None or (isinstance(items_to_process_iterable, list) and len(items_to_process_iterable) > 0) or max_items > 0 ):
-            # Check if input items were actually found if max_items wasn't 0
-            # This check is a bit more complex now due to potential list conversion
-            is_input_empty = True
-            try:
-                with open(items_filepath, 'r', encoding='utf-8') as f_check:
-                    if any(line.strip() for line in f_check):
-                        is_input_empty = False
-                if is_input_empty:
-                     print("Warning: Input file was empty or contained only whitespace.")
-                elif isinstance(items_to_process_iterable, list) and not items_to_process_iterable:
-                     print("No items were loaded to process (e.g. all lines skipped or max_items=0).")
-                else:
-                    print("No items were successfully processed and saved. Check warnings above.")
-            except FileNotFoundError: # Should be caught earlier but as a safeguard
-                pass
+        # This final check is less critical now as individual functions provide feedback
+        # if items_saved_count_this_run == 0:
+        #    print("No new items were processed and saved in this run. Check logs for details.")
+
     except FileNotFoundError:
         print(f"Process aborted: Input file '{items_filepath}' not found.")
     except Exception as e:
@@ -282,5 +272,9 @@ def main(items_filepath: str = DEFAULT_ITEMS_FILEPATH,
         print(f"Item labeling process finished in {end_time - start_time:.2f} seconds.")
 
 if __name__ == "__main__":
-    num_workers_to_use = os.cpu_count()
-    main(max_items=50, num_workers=num_workers_to_use) # Process 100 items with specified workers
+    # For testing, ensure DEFAULT_ITEMS_FILEPATH exists or create a dummy one.
+    # To simulate a re-run, you would run this script once, let it create some output in DEFAULT_OUTPUT_FILEPATH,
+    # and then run it again. It should skip the items it processed in the first run.
+    
+    num_workers_to_use = os.cpu_count() or 2 # Use at least 2 for concurrency if cpu_count is 1 or None
+    main(max_items=100, num_workers=num_workers_to_use) # Process up to 10 *new* items
