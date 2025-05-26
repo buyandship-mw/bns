@@ -3,7 +3,20 @@ from itertools import islice
 from bns.utils.openai_client_azure import prompt_model # Your actual import
 
 # --- Constants ---
-PROMPT_TEMPLATE = """Product name: Colgate Total Whitening Toothpaste 120g
+PROMPT_TEMPLATE = """You are an expert in product cataloging. Your task is to extract the primary brand name and the specific item type from product names.
+
+Key Guidelines for Brand Extraction:
+1.  **Identify the Core Brand:** Focus on the main recognizable brand.
+2.  **Normalize Variations:**
+    * Convert different spellings or accented characters to a common, unaccented form (e.g., "Pokémon" should become "Pokemon").
+    * Attribute sub-brands, store-specific versions (like "Pokemon Center", "Pokemon Center Yokohama"), or product lines directly related to a core brand back to that core brand. For example, if the item is clearly a "Pokemon" product, the brand should be "Pokemon", even if "Pokemon Center" is mentioned.
+3.  **Null for Unclear Brands:** If a distinct product brand cannot be identified, use null for "brand_name".
+
+Return strictly the JSON result in the format specified by the examples.
+
+--- EXAMPLES ---
+
+Product name: Colgate Total Whitening Toothpaste 120g
 Result: {{"brand_name": "Colgate", "item_type": "Toothpaste"}}
 
 Product name: Extra Virgin Olive Oil 500ml
@@ -11,6 +24,23 @@ Result: {{"brand_name": null, "item_type": "Olive Oil"}}
 
 Product name: 0308069710162006000999
 Result: {{"brand_name": null, "item_type": null}}
+
+Product name: Pokémon Surging Sparks Elite Trainer Box [Pokémon Center Exclusive]
+Result: {{"brand_name": "Pokemon", "item_type": "Elite Trainer Box"}}
+
+Product name: Sapporo's Pikachu 005/SM-P Pokemon Center 2016 - Japanese - PSA 10 Gem Mint
+Result: {{"brand_name": "Pokemon", "item_type": "Pokemon Card"}}
+
+Product name: BGS 6 YOKOHAMAS'S PIKACHU  | POKEMON CENTER YOKOHAMA SPECIAL BOX 281/SM-P
+Result: {{"brand_name": "Pokemon", "item_type": "Special Box"}}
+
+Product name: Nike Air Max 90
+Result: {{"brand_name": "Nike", "item_type": "Shoes"}}
+
+Product name: Apple iPhone 15 Pro Max
+Result: {{"brand_name": "Apple", "item_type": "Smartphone"}}
+
+--- END EXAMPLES ---
 
 Return strictly the JSON result for the below product name.
 
