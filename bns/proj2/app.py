@@ -74,11 +74,11 @@ def load_items_from_jsonl(filepath: str):
 def format_llm_prompt(item_name: str, template: str = PROMPT_TEMPLATE) -> str:
     return template.format(name=item_name)
 
-# --- LLM Interaction and Response Parsing (remains the same) ---
+# --- LLM Interaction and Response Parsing ---
 def get_item_labels_from_llm(item_name: str, prompt_template: str = PROMPT_TEMPLATE):
     """
-    Interacts with the LLM to get brand and item type labels for a given item name.
-    Returns a tuple (brand_name, item_type) or (None, None) if both are not found.
+    Gets brand name and item type from the LLM for a given item name.
+    Handles LLM call and JSON parsing of the response, including stripping Markdown fences.
     """
     prompt = format_llm_prompt(item_name, prompt_template)
     try:
@@ -87,13 +87,37 @@ def get_item_labels_from_llm(item_name: str, prompt_template: str = PROMPT_TEMPL
         print(f"Error during LLM call for item '{item_name}': {e}")
         return None, None
 
+    # Attempt to clean the raw_response from common Markdown fences
+    cleaned_response_str = raw_response.strip()
+
+    if cleaned_response_str.startswith("```json") and cleaned_response_str.endswith("```"):
+        # Handles ```json ... ```
+        # Slice off "```json" from the start and "```" from the end
+        json_str_to_parse = cleaned_response_str[len("```json") : -len("```")].strip()
+    elif cleaned_response_str.startswith("```") and cleaned_response_str.endswith("```"):
+        # Handles ``` ... ``` (generic code block)
+        # Slice off "```" from the start and "```" from the end
+        json_str_to_parse = cleaned_response_str[len("```") : -len("```")].strip()
+    else:
+        # Assume the response is already plain JSON or will fail parsing as before
+        json_str_to_parse = cleaned_response_str
+
     try:
-        label_data = json.loads(raw_response)
+        # Ensure json_str_to_parse is not empty after potential stripping,
+        # which could happen if the LLM returned, e.g., "```json\n```"
+        if not json_str_to_parse:
+            # This specific error message helps diagnose if stripping resulted in an empty string.
+            raise json.JSONDecodeError("Extracted JSON string is empty after stripping fences.", cleaned_response_str, 0)
+
+        label_data = json.loads(json_str_to_parse)
         brand_name = label_data.get("brand_name")
         item_type = label_data.get("item_type")
         return brand_name, item_type
     except json.JSONDecodeError as e:
-        print(f"Error parsing LLM JSON response for item '{item_name}': {e}. Response: '{raw_response}'")
+        # Enhanced error message to show what was attempted to be parsed
+        print(f"Error parsing LLM JSON response for item '{item_name}': {e}. "
+              f"Attempted to parse (first 200 chars): '{json_str_to_parse[:200]}...' "
+              f"Raw response (first 200 chars): '{raw_response[:200]}...'")
         return None, None
     except Exception as e: # Catch any other unexpected errors during parsing
         print(f"An unexpected error occurred while parsing LLM response for item '{item_name}': {e}")
@@ -257,7 +281,6 @@ def main(items_filepath: str = DEFAULT_ITEMS_FILEPATH,
         end_time = time.time()
         print(f"Item labeling process finished in {end_time - start_time:.2f} seconds.")
 
-
 if __name__ == "__main__":
     num_workers_to_use = os.cpu_count()
-    main(max_items=100, num_workers=num_workers_to_use) # Process 100 items with specified workers
+    main(max_items=50, num_workers=num_workers_to_use) # Process 100 items with specified workers
