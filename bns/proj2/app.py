@@ -1,6 +1,6 @@
 import json
 from itertools import islice
-from bns.utils.openai_client_azure import prompt_model
+from bns.utils.openai_client_azure import prompt_model # Your actual import
 
 # --- Constants ---
 PROMPT_TEMPLATE = """Product name: Colgate Total Whitening Toothpaste 120g
@@ -16,8 +16,8 @@ Return strictly the JSON result for the below product name.
 
 Product name: {name}
 """
-DEFAULT_ITEMS_FILEPATH = 'bns/proj2/data/items.json' # Or your actual path
-DEFAULT_OUTPUT_FILEPATH = 'bns/proj2/data/branded_items.json' # Or your actual path
+DEFAULT_ITEMS_FILEPATH = 'bns/proj2/data/items.json'
+DEFAULT_OUTPUT_FILEPATH = 'bns/proj2/data/branded_items.jsonl' # Changed extension to .jsonl
 
 # --- Data Loading ---
 def load_items_from_jsonl(filepath: str):
@@ -36,16 +36,16 @@ def load_items_from_jsonl(filepath: str):
                     item_name = item.get('item_name', '').strip()
                     item_ct = item.get('item_ct')
                     if not item_name or item_ct is None:
-                        print(f"Warning: Skipping line {line_number} due to missing 'item_name' or 'item_ct': {line}")
+                        print(f"Warning: Skipping line {line_number} in '{filepath}' due to missing 'item_name' or 'item_ct': {line}")
                         continue
                     yield (item_name, item['item_ct'])
                 except json.JSONDecodeError as e:
-                    print(f"Warning: Skipping line {line_number} due to JSON decoding error: {e}. Line content: '{line}'")
+                    print(f"Warning: Skipping line {line_number} in '{filepath}' due to JSON decoding error: {e}. Line content: '{line}'")
                 except KeyError as e:
-                    print(f"Warning: Skipping line {line_number} due to missing key {e}. Line content: '{line}'")
+                    print(f"Warning: Skipping line {line_number} in '{filepath}' due to missing key {e}. Line content: '{line}'")
     except FileNotFoundError:
-        print(f"Error: File not found at {filepath}")
-        raise
+        print(f"Error: Input file not found at {filepath}")
+        raise # Re-raise as this is critical for the script to run
 
 # --- Prompt Engineering ---
 def format_llm_prompt(item_name: str, template: str = PROMPT_TEMPLATE) -> str:
@@ -60,8 +60,8 @@ def get_item_labels_from_llm(item_name: str, prompt_template: str = PROMPT_TEMPL
     """
     prompt = format_llm_prompt(item_name, prompt_template)
     try:
-        raw_response = prompt_model(prompt) # Actual call to the LLM
-    except Exception as e: # Catch potential errors from prompt_model itself
+        raw_response = prompt_model(prompt)
+    except Exception as e:
         print(f"Error during LLM call for item '{item_name}': {e}")
         return None, None
 
@@ -73,69 +73,94 @@ def get_item_labels_from_llm(item_name: str, prompt_template: str = PROMPT_TEMPL
     except json.JSONDecodeError as e:
         print(f"Error parsing LLM JSON response for item '{item_name}': {e}. Response: '{raw_response}'")
         return None, None
-    except Exception as e: # Catch any other unexpected errors during parsing
+    except Exception as e:
         print(f"An unexpected error occurred while parsing LLM response for item '{item_name}': {e}")
         return None, None
 
-# --- Data Processing ---
-def process_items(items_iterable, prompt_template: str = PROMPT_TEMPLATE):
+# --- Data Processing (Generator) ---
+def generate_processed_items(items_iterable, prompt_template: str = PROMPT_TEMPLATE):
     """
-    Processes a list of items, gets labels from LLM, and yields structured results.
+    Processes an iterable of items, gets labels from LLM, and yields structured results.
     """
-    results = []
     for name, ct in items_iterable:
         brand_name, item_type = get_item_labels_from_llm(name, prompt_template)
-        results.append({
-            "item_name": name, # Good to keep original name for reference
+        processed_item = {
+            "item_name": name,
             "brand_name": brand_name,
             "item_type": item_type,
             "item_ct": ct
-        })
-        print(f"Processed item: {name}, Brand: {brand_name}, Type: {item_type}, Count: {ct}")
-    return results
+        }
+        print(f"Processed: Name='{name}', Brand='{brand_name}', Type='{item_type}', Count={ct}")
+        yield processed_item
 
-# --- Data Saving ---
-def save_results_to_json(results: list, output_path: str):
-    """Saves the list of results to a JSON file."""
+# --- Data Saving (JSONL) ---
+def save_results_to_jsonl(processed_items_generator, output_path: str) -> int:
+    """
+    Saves items from a generator to an output file in JSONL format.
+    Each item is written as a new line.
+    Returns the count of items saved.
+    """
+    count_saved = 0
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-        print(f"Successfully saved {len(results)} labeled items to {output_path}")
+            for item in processed_items_generator:
+                try:
+                    json_line = json.dumps(item, ensure_ascii=False)
+                    f.write(json_line + '\n')
+                    count_saved += 1
+                except TypeError as e:
+                    print(f"Error serializing item to JSON: {e}. Item: {item}")
+        print(f"Successfully saved {count_saved} labeled items to {output_path}")
+        return count_saved
     except IOError as e:
-        print(f"Error saving results to {output_path}: {e}")
+        print(f"Error writing to output file {output_path}: {e}")
     except Exception as e:
-        print(f"An unexpected error occurred while saving results: {e}")
+        print(f"An unexpected error occurred while saving results to {output_path}: {e}")
+    return count_saved # Return count even if it's 0 or partial due to error before file opening
 
 # --- Main Execution ---
-def main(items_filepath: str, output_filepath: str, max_items: int = None):
+def main(items_filepath: str = DEFAULT_ITEMS_FILEPATH, output_filepath: str = DEFAULT_OUTPUT_FILEPATH, max_items: int = None):
     """
-    Main function to load, process, and save item labels.
+    Main function to load, process, and save item labels in JSONL format.
     """
-    print("Starting item labeling process...")
+    print(f"Starting item labeling process...")
+    print(f"Input file: {items_filepath}")
+    print(f"Output file: {output_filepath}")
 
-    # 1. Load items
-    raw_items_generator = load_items_from_jsonl(items_filepath)
+    try:
+        # 1. Load items (generator)
+        raw_items_generator = load_items_from_jsonl(items_filepath)
 
-    # 2. Optionally limit the number of items to process (e.g., for testing)
-    if max_items is not None:
-        items_to_process = islice(raw_items_generator, max_items)
-        print(f"Processing a maximum of {max_items} items.")
-    else:
-        items_to_process = raw_items_generator
-        print("Processing all items from the input file.")
+        # 2. Optionally limit the number of items to process (e.g., for testing)
+        if max_items is not None and max_items > 0 :
+            items_to_process = islice(raw_items_generator, max_items)
+            print(f"Processing a maximum of {max_items} items.")
+        else:
+            items_to_process = raw_items_generator
+            print("Processing all available items from the input file.")
 
-    # 3. Process items
-    labeled_results = process_items(items_to_process, PROMPT_TEMPLATE)
+        # 3. Process items (generator)
+        # Renamed process_items to generate_processed_items to emphasize it's a generator
+        processed_items_generator = generate_processed_items(items_to_process, PROMPT_TEMPLATE)
 
-    # 4. Save results
-    if labeled_results: # Only save if there are results
-        save_results_to_json(labeled_results, output_filepath)
-    else:
-        print("No items were processed or no results generated.")
+        # 4. Save results to JSONL
+        items_saved_count = save_results_to_jsonl(processed_items_generator, output_filepath)
+
+        if items_saved_count == 0 and (max_items is None or max_items > 0):
+             # Check if input items were actually found if max_items wasn't 0
+            with open(items_filepath, 'r', encoding='utf-8') as f_check:
+                if not any(line.strip() for line in f_check):
+                    print("Warning: Input file was empty or contained only whitespace.")
+                else:
+                    print("No items were successfully processed and saved. Check warnings above.")
+
+    except FileNotFoundError:
+        # load_items_from_jsonl already prints, this is if it's re-raised to here
+        print(f"Process aborted: Input file '{items_filepath}' not found.")
+    except Exception as e:
+        print(f"An unexpected critical error occurred in main execution: {e}")
 
     print("Item labeling process finished.")
 
 if __name__ == "__main__":
-    main(items_filepath=DEFAULT_ITEMS_FILEPATH,
-         output_filepath=DEFAULT_OUTPUT_FILEPATH,
-         max_items=10) # Use a number like 10 for testing, or None for full run
+    main(max_items=100)
