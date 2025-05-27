@@ -3,6 +3,7 @@ from itertools import islice
 import concurrent.futures
 import os
 import time
+from typing import Optional
 
 from bns.utils.openai_client_azure import prompt_model # Your actual import
 
@@ -82,7 +83,12 @@ def get_item_labels_from_llm(item_name: str, prompt_template: str = PROMPT_TEMPL
         print(f"Error during LLM call for item '{item_name}': {e}")
         return None, None
 
-    cleaned_response_str = raw_response.strip()
+    if raw_response is None:
+        print(f"Error during LLM call for item '{item_name}': Received None response.")
+        return None, None
+    else:
+        cleaned_response_str = raw_response.strip()
+
     if cleaned_response_str.startswith("```json") and cleaned_response_str.endswith("```"):
         json_str_to_parse = cleaned_response_str[len("```json") : -len("```")].strip()
     elif cleaned_response_str.startswith("```") and cleaned_response_str.endswith("```"):
@@ -127,12 +133,8 @@ def process_single_item_task(item_data, prompt_template_str):
 # --- Data Processing (Generator) - Modified for Concurrency & Skipping ---
 def generate_processed_items_concurrently(items_iterable,
                                           prompt_template_str: str = PROMPT_TEMPLATE,
-                                          max_workers: int = None,
-                                          already_processed_names: set = None):
-    if max_workers is None:
-        max_workers = os.cpu_count() or 1
-        print(f"Using up to {max_workers} worker threads (default based on CPU cores). Adjust based on API limits.")
-    
+                                          max_workers: int = 1,
+                                          already_processed_names: Optional[set] = None):
     if already_processed_names is None:
         already_processed_names = set()
 
@@ -196,8 +198,8 @@ def save_results_to_jsonl(processed_items_generator, output_path: str) -> int:
 # --- Main Execution - Modified for Resumability ---
 def main(items_filepath: str = DEFAULT_ITEMS_FILEPATH,
          output_filepath: str = DEFAULT_OUTPUT_FILEPATH,
-         max_items: int = None,
-         num_workers: int = None):
+         max_items: Optional[int] = None,
+         num_workers: int = 1):
     print(f"Starting item labeling process...")
     print(f"Input file: {items_filepath}")
     print(f"Output file (appending): {output_filepath}")
@@ -277,4 +279,4 @@ if __name__ == "__main__":
     # and then run it again. It should skip the items it processed in the first run.
     
     num_workers_to_use = os.cpu_count() or 2 # Use at least 2 for concurrency if cpu_count is 1 or None
-    main(max_items=100, num_workers=num_workers_to_use) # Process up to 10 *new* items
+    main(max_items=10, num_workers=num_workers_to_use) # Process up to 10 *new* items
