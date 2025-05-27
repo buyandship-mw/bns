@@ -102,6 +102,10 @@ def get_item_labels_from_llm(item_name: str, prompt_template: str = PROMPT_TEMPL
         label_data = json.loads(json_str_to_parse)
         brand_name = label_data.get("brand_name")
         item_type = label_data.get("item_type")
+        if brand_name is not None:
+            brand_name = brand_name.title()
+        if item_type is not None:
+            item_type = item_type.title()
         return brand_name, item_type
     except json.JSONDecodeError as e:
         print(f"Error parsing LLM JSON response for item '{item_name}': {e}. "
