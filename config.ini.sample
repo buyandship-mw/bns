@@ -1,9 +1,0 @@
-[openai]
-api_key=
-model = gpt-4.1-mini
-
-[azure_openai]
-endpoint =
-api_key = 
-deployment = gpt-4.1-mini
-api_version = 2024-12-01-preview
