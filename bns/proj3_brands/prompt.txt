@@ -1,0 +1,8 @@
+Prompt:
+Extract the brand name: "<item name, URL as fallback>"
+
+Respond in JSON: {'name': <>} or {'error': <reason>}
+
+---
+
+Use azureopenai since you don't need web search no more

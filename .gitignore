@@ -4,3 +4,4 @@ __pycache__/
 *.json
 *.jsonl
 .DS_Store
+.env
